@@ -834,6 +834,8 @@ func (r *ComputeInstanceReconciler) getFirstVMIIPAddress(ctx context.Context, ta
 			return iface.IP
 		}
 	}
+
+	log.Info("no IP address found for VirtualMachineInstance", "namespace", namespace, "name", name)
 	return ""
 }
 
