@@ -213,8 +213,25 @@ func (r *ComputeInstanceReconciler) getTargetClient(ctx context.Context) (client
 	return targetCluster.GetClient(), nil
 }
 
+// tenantAnnotationIndexField is the field path used for cache index and List MatchingFields.
+var tenantAnnotationIndexField = fmt.Sprintf("metadata.annotations.%s", osacTenantAnnotation)
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ComputeInstanceReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+
+	// Index tenant annotation in order to list compute instances by tenant
+	ctx := context.Background()
+	localMgr := mgr.GetLocalManager()
+	if err := localMgr.GetFieldIndexer().IndexField(ctx, &v1alpha1.ComputeInstance{}, tenantAnnotationIndexField,
+		func(obj client.Object) []string {
+			if v, ok := obj.GetAnnotations()[osacTenantAnnotation]; ok {
+				return []string{v}
+			}
+			return nil
+		}); err != nil {
+		return fmt.Errorf("failed to index ComputeInstance by tenant annotation: %w", err)
+	}
+
 	labelPredicate, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{
 		MatchExpressions: []metav1.LabelSelectorRequirement{
 			{
@@ -294,14 +311,13 @@ func (r *ComputeInstanceReconciler) mapTenantToComputeInstances(ctx context.Cont
 	log := ctrllog.FromContext(ctx)
 
 	// Get all compute instances matching the tenant reference
-	annotationKey := fmt.Sprintf("metadata.annotations.%s", osacTenantAnnotation)
 	computeInstances := &v1alpha1.ComputeInstanceList{}
 	err := r.List(ctx,
 		computeInstances,
 		client.InNamespace(r.ComputeInstanceNamespace),
-		client.MatchingFields{annotationKey: obj.GetName()})
+		client.MatchingFields{tenantAnnotationIndexField: obj.GetName()})
 	if err != nil {
-		log.Error(err, "failed to list compute instances", "annotationKey", annotationKey, "tenant", obj.GetName())
+		log.Error(err, "failed to list compute instances", "annotationKey", tenantAnnotationIndexField, "tenant", obj.GetName())
 		return nil
 	}
 
