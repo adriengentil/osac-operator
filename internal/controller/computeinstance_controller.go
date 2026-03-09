@@ -417,6 +417,12 @@ func (r *ComputeInstanceReconciler) triggerProvisionJob(ctx context.Context, ins
 func (r *ComputeInstanceReconciler) pollProvisionJob(ctx context.Context, instance *v1alpha1.ComputeInstance, latestProvisionJob *v1alpha1.JobStatus) (ctrl.Result, error) {
 	log := ctrllog.FromContext(ctx)
 
+	// If the job isn't in the instance's job list (stale cache), requeue to let the cache refresh.
+	if findJobByID(instance.Status.Jobs, latestProvisionJob.JobID) == nil {
+		log.Info("provision job not found in cached status, requeueing", "jobID", latestProvisionJob.JobID)
+		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
+	}
+
 	status, err := r.ProvisioningProvider.GetProvisionStatus(ctx, instance, latestProvisionJob.JobID)
 	if err != nil {
 		log.Error(err, "failed to get provision job status", "jobID", latestProvisionJob.JobID)
