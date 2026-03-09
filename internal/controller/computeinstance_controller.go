@@ -367,43 +367,56 @@ func (r *ComputeInstanceReconciler) handleProvisioning(ctx context.Context, inst
 	case provisionSkip:
 		return ctrl.Result{}, nil
 	case provisionTrigger:
-		log.Info("triggering provisioning", "provider", r.ProvisioningProvider.Name())
-		result, err := r.ProvisioningProvider.TriggerProvision(ctx, instance)
-		if err != nil {
-			// Check if this is a rate limit error
-			var rateLimitErr *provisioning.RateLimitError
-			if errors.As(err, &rateLimitErr) {
-				log.Info("provisioning request rate-limited, will retry", "retryAfter", rateLimitErr.RetryAfter)
-				return ctrl.Result{RequeueAfter: rateLimitErr.RetryAfter}, nil
-			}
+		return r.triggerProvisionJob(ctx, instance)
+	default: // provisionPoll
+		return r.pollProvisionJob(ctx, instance, latestProvisionJob)
+	}
+}
 
-			// Actual error - mark as failed
-			log.Error(err, "failed to trigger provisioning")
-			newJob := v1alpha1.JobStatus{
-				JobID:     "",
-				Type:      v1alpha1.JobTypeProvision,
-				Timestamp: metav1.NewTime(time.Now().UTC()),
-				State:     v1alpha1.JobStateFailed,
-				Message:   fmt.Sprintf("Failed to trigger provisioning: %v", err),
-			}
-			instance.Status.Jobs = r.appendJob(instance.Status.Jobs, newJob)
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
+// triggerProvisionJob triggers a new provision job and records it in the instance status.
+func (r *ComputeInstanceReconciler) triggerProvisionJob(ctx context.Context, instance *v1alpha1.ComputeInstance) (ctrl.Result, error) {
+	log := ctrllog.FromContext(ctx)
+
+	log.Info("triggering provisioning", "provider", r.ProvisioningProvider.Name())
+	result, err := r.ProvisioningProvider.TriggerProvision(ctx, instance)
+	if err != nil {
+		// Check if this is a rate limit error
+		var rateLimitErr *provisioning.RateLimitError
+		if errors.As(err, &rateLimitErr) {
+			log.Info("provisioning request rate-limited, will retry", "retryAfter", rateLimitErr.RetryAfter)
+			return ctrl.Result{RequeueAfter: rateLimitErr.RetryAfter}, nil
 		}
 
+		// Actual error - mark as failed
+		log.Error(err, "failed to trigger provisioning")
 		newJob := v1alpha1.JobStatus{
-			JobID:                  result.JobID,
-			Type:                   v1alpha1.JobTypeProvision,
-			Timestamp:              metav1.NewTime(time.Now().UTC()),
-			State:                  result.InitialState,
-			Message:                result.Message,
-			BlockDeletionOnFailure: false, // Provision failures don't block deletion
+			JobID:     "",
+			Type:      v1alpha1.JobTypeProvision,
+			Timestamp: metav1.NewTime(time.Now().UTC()),
+			State:     v1alpha1.JobStateFailed,
+			Message:   fmt.Sprintf("Failed to trigger provisioning: %v", err),
 		}
 		instance.Status.Jobs = r.appendJob(instance.Status.Jobs, newJob)
-		log.Info("provisioning job triggered", "jobID", result.JobID)
 		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
 	}
 
-	// provisionPoll: we have a job ID, check its status
+	newJob := v1alpha1.JobStatus{
+		JobID:                  result.JobID,
+		Type:                   v1alpha1.JobTypeProvision,
+		Timestamp:              metav1.NewTime(time.Now().UTC()),
+		State:                  result.InitialState,
+		Message:                result.Message,
+		BlockDeletionOnFailure: false, // Provision failures don't block deletion
+	}
+	instance.Status.Jobs = r.appendJob(instance.Status.Jobs, newJob)
+	log.Info("provisioning job triggered", "jobID", result.JobID)
+	return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
+}
+
+// pollProvisionJob checks the status of an existing provision job and updates the instance accordingly.
+func (r *ComputeInstanceReconciler) pollProvisionJob(ctx context.Context, instance *v1alpha1.ComputeInstance, latestProvisionJob *v1alpha1.JobStatus) (ctrl.Result, error) {
+	log := ctrllog.FromContext(ctx)
+
 	status, err := r.ProvisioningProvider.GetProvisionStatus(ctx, instance, latestProvisionJob.JobID)
 	if err != nil {
 		log.Error(err, "failed to get provision job status", "jobID", latestProvisionJob.JobID)
