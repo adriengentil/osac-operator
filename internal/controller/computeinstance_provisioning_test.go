@@ -109,6 +109,16 @@ var _ = Describe("ComputeInstance Provisioning", func() {
 	})
 
 	Context("handleProvisioning", func() {
+		It("should skip when config versions match", func() {
+			instance.Status.DesiredConfigVersion = "v1"
+			instance.Status.ReconciledConfigVersion = "v1"
+
+			result, err := reconciler.handleProvisioning(ctx, instance)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+			Expect(instance.Status.Jobs).To(BeEmpty())
+		})
+
 		It("should trigger provision when no job ID exists", func() {
 			provider := &mockProvisioningProvider{
 				triggerProvisionFunc: func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {

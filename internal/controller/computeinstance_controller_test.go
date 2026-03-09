@@ -875,6 +875,139 @@ var _ = Describe("ComputeInstance Controller", func() {
 				Expect(action).To(Equal(provisionSkip))
 				Expect(job).NotTo(BeNil())
 			})
+
+			It("should poll when API server has non-terminal job but cache shows none", func() {
+				// Create instance in API server with a running provision job
+				instanceName := "test-api-server-check-no-cache"
+				apiInstance := &osacv1alpha1.ComputeInstance{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      instanceName,
+						Namespace: "default",
+					},
+					Spec: newTestComputeInstanceSpec("test_template"),
+				}
+				Expect(k8sClient.Create(ctx, apiInstance)).To(Succeed())
+				DeferCleanup(func() {
+					_ = k8sClient.Delete(ctx, apiInstance)
+				})
+
+				jobTimestamp := metav1.NewTime(time.Now().UTC())
+				apiInstance.Status.DesiredConfigVersion = "v1"
+				apiInstance.Status.Jobs = []osacv1alpha1.JobStatus{
+					{Type: osacv1alpha1.JobTypeProvision, JobID: "running-job", State: osacv1alpha1.JobStateRunning, Timestamp: jobTimestamp},
+				}
+				Expect(k8sClient.Status().Update(ctx, apiInstance)).To(Succeed())
+
+				// Simulate stale cache: in-memory instance has no jobs
+				staleInstance := &osacv1alpha1.ComputeInstance{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      instanceName,
+						Namespace: "default",
+					},
+					Status: osacv1alpha1.ComputeInstanceStatus{
+						DesiredConfigVersion: "v1",
+					},
+				}
+
+				action, job := reconciler.shouldTriggerProvision(ctx, staleInstance)
+				Expect(action).To(Equal(provisionPoll))
+				Expect(job).NotTo(BeNil())
+				Expect(job.JobID).To(Equal("running-job"))
+				// Verify the stale instance's jobs were updated from the API server
+				Expect(staleInstance.Status.Jobs).To(HaveLen(1))
+			})
+
+			It("should poll when API server has non-terminal job but cache shows terminal job with version mismatch", func() {
+				// Create instance in API server with a running provision job (newer than the terminal one)
+				instanceName := "test-api-server-check-stale-terminal"
+				apiInstance := &osacv1alpha1.ComputeInstance{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      instanceName,
+						Namespace: "default",
+					},
+					Spec: newTestComputeInstanceSpec("test_template"),
+				}
+				Expect(k8sClient.Create(ctx, apiInstance)).To(Succeed())
+				DeferCleanup(func() {
+					_ = k8sClient.Delete(ctx, apiInstance)
+				})
+
+				oldJobTimestamp := metav1.NewTime(time.Now().UTC().Add(-time.Minute))
+				newJobTimestamp := metav1.NewTime(time.Now().UTC())
+				apiInstance.Status.DesiredConfigVersion = "v2"
+				apiInstance.Status.ReconciledConfigVersion = "v1"
+				apiInstance.Status.Jobs = []osacv1alpha1.JobStatus{
+					{Type: osacv1alpha1.JobTypeProvision, JobID: "old-job", State: osacv1alpha1.JobStateSucceeded, Timestamp: oldJobTimestamp},
+					{Type: osacv1alpha1.JobTypeProvision, JobID: "new-running-job", State: osacv1alpha1.JobStateRunning, Timestamp: newJobTimestamp},
+				}
+				Expect(k8sClient.Status().Update(ctx, apiInstance)).To(Succeed())
+
+				// Simulate stale cache: in-memory instance only has the old terminal job
+				staleInstance := &osacv1alpha1.ComputeInstance{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      instanceName,
+						Namespace: "default",
+					},
+					Status: osacv1alpha1.ComputeInstanceStatus{
+						DesiredConfigVersion:    "v2",
+						ReconciledConfigVersion: "v1",
+						Jobs: []osacv1alpha1.JobStatus{
+							{Type: osacv1alpha1.JobTypeProvision, JobID: "old-job", State: osacv1alpha1.JobStateSucceeded},
+						},
+					},
+				}
+
+				action, job := reconciler.shouldTriggerProvision(ctx, staleInstance)
+				Expect(action).To(Equal(provisionPoll))
+				Expect(job).NotTo(BeNil())
+				Expect(job.JobID).To(Equal("new-running-job"))
+				// Verify the stale instance's jobs were updated from the API server
+				Expect(staleInstance.Status.Jobs).To(HaveLen(2))
+			})
+
+			It("should trigger when API server also shows no non-terminal job", func() {
+				// Create instance in API server with only a terminal job
+				instanceName := "test-api-server-check-all-terminal"
+				apiInstance := &osacv1alpha1.ComputeInstance{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      instanceName,
+						Namespace: "default",
+					},
+					Spec: newTestComputeInstanceSpec("test_template"),
+				}
+				Expect(k8sClient.Create(ctx, apiInstance)).To(Succeed())
+				DeferCleanup(func() {
+					_ = k8sClient.Delete(ctx, apiInstance)
+				})
+
+				jobTimestamp := metav1.NewTime(time.Now().UTC())
+				apiInstance.Status.DesiredConfigVersion = "v2"
+				apiInstance.Status.ReconciledConfigVersion = "v1"
+				apiInstance.Status.Jobs = []osacv1alpha1.JobStatus{
+					{Type: osacv1alpha1.JobTypeProvision, JobID: "done-job", State: osacv1alpha1.JobStateSucceeded, Timestamp: jobTimestamp},
+				}
+				Expect(k8sClient.Status().Update(ctx, apiInstance)).To(Succeed())
+
+				// In-memory instance matches API server — terminal job, versions differ
+				staleInstance := &osacv1alpha1.ComputeInstance{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      instanceName,
+						Namespace: "default",
+					},
+					Status: osacv1alpha1.ComputeInstanceStatus{
+						DesiredConfigVersion:    "v2",
+						ReconciledConfigVersion: "v1",
+						Jobs: []osacv1alpha1.JobStatus{
+							{Type: osacv1alpha1.JobTypeProvision, JobID: "done-job", State: osacv1alpha1.JobStateSucceeded},
+						},
+					},
+				}
+
+				action, job := reconciler.shouldTriggerProvision(ctx, staleInstance)
+				Expect(action).To(Equal(provisionTrigger))
+				Expect(job).NotTo(BeNil())
+				Expect(job.JobID).To(Equal("done-job"))
+			})
 		})
 	})
 
