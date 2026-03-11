@@ -28,9 +28,9 @@ import (
 
 // VirtualNetworkFeedbackReconciler sends updates to the fulfillment service.
 type VirtualNetworkFeedbackReconciler struct {
-	hubClient               clnt.Client
-	virtualNetworksClient   privatev1.VirtualNetworksClient
-	virtualNetworkNamespace string
+	hubClient             clnt.Client
+	virtualNetworksClient privatev1.VirtualNetworksClient
+	networkingNamespace   string
 }
 
 // virtualNetworkFeedbackReconcilerTask contains data that is used for the reconciliation of a specific virtual network, so there is less
@@ -42,11 +42,11 @@ type virtualNetworkFeedbackReconcilerTask struct {
 }
 
 // NewVirtualNetworkFeedbackReconciler creates a reconciler that sends to the fulfillment service updates about virtual networks.
-func NewVirtualNetworkFeedbackReconciler(hubClient clnt.Client, grpcConn *grpc.ClientConn, virtualNetworkNamespace string) *VirtualNetworkFeedbackReconciler {
+func NewVirtualNetworkFeedbackReconciler(hubClient clnt.Client, grpcConn *grpc.ClientConn, networkingNamespace string) *VirtualNetworkFeedbackReconciler {
 	return &VirtualNetworkFeedbackReconciler{
-		hubClient:               hubClient,
-		virtualNetworksClient:   privatev1.NewVirtualNetworksClient(grpcConn),
-		virtualNetworkNamespace: virtualNetworkNamespace,
+		hubClient:             hubClient,
+		virtualNetworksClient: privatev1.NewVirtualNetworksClient(grpcConn),
+		networkingNamespace:   networkingNamespace,
 	}
 }
 
@@ -54,7 +54,7 @@ func NewVirtualNetworkFeedbackReconciler(hubClient clnt.Client, grpcConn *grpc.C
 func (r *VirtualNetworkFeedbackReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("virtualnetwork-feedback").
-		For(&v1alpha1.VirtualNetwork{}, builder.WithPredicates(VirtualNetworkNamespacePredicate(r.virtualNetworkNamespace))).
+		For(&v1alpha1.VirtualNetwork{}, builder.WithPredicates(NetworkingNamespacePredicate(r.networkingNamespace))).
 		Complete(r)
 }
 

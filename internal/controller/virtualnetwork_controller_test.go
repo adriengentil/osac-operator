@@ -37,54 +37,36 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 		mockProvider *mockVirtualNetworkProvider
 		ctx          context.Context
 		vnet         *osacv1alpha1.VirtualNetwork
-		networkClass *osacv1alpha1.NetworkClass
 	)
 
 	BeforeEach(func() {
 		ctx = context.TODO()
 		mockProvider = &mockVirtualNetworkProvider{}
 		reconciler = &VirtualNetworkReconciler{
-			Client:                  k8sClient,
-			Scheme:                  k8sClient.Scheme(),
-			VirtualNetworkNamespace: "default",
-			ProvisioningProvider:    mockProvider,
-			StatusPollInterval:      1 * time.Second,
-			MaxJobHistory:           10,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			NetworkingNamespace:  "default",
+			ProvisioningProvider: mockProvider,
+			StatusPollInterval:   1 * time.Second,
+			MaxJobHistory:        10,
 		}
 
-		// Create NetworkClass fixture
-		networkClass = &osacv1alpha1.NetworkClass{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "cudn-net",
-				Namespace: "default",
-			},
-			Spec: osacv1alpha1.NetworkClassSpec{
-				ImplementationStrategy: "cudn-net",
-			},
-			Status: osacv1alpha1.NetworkClassStatus{
-				State: osacv1alpha1.NetworkClassStateReady,
-			},
-		}
-		Expect(k8sClient.Create(ctx, networkClass)).To(Succeed())
-
-		// Create VirtualNetwork fixture
+		// Create VirtualNetwork fixture with ImplementationStrategy
 		vnet = &osacv1alpha1.VirtualNetwork{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-vnet",
 				Namespace: "default",
 			},
 			Spec: osacv1alpha1.VirtualNetworkSpec{
-				Region:       "us-west-1",
-				IPv4CIDR:     "10.0.0.0/16",
-				NetworkClass: "cudn-net",
+				Region:                 "us-west-1",
+				IPv4CIDR:               "10.0.0.0/16",
+				NetworkClass:           "cudn-net",
+				ImplementationStrategy: "cudn-net",
 			},
 		}
 	})
 
 	AfterEach(func() {
-		// Cleanup NetworkClass
-		_ = k8sClient.Delete(ctx, networkClass)
-
 		// Cleanup VirtualNetwork if it exists
 		vnetKey := types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace}
 		existingVnet := &osacv1alpha1.VirtualNetwork{}
@@ -130,7 +112,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			Expect(updatedVnet.Status.Phase).To(Equal(osacv1alpha1.VirtualNetworkPhaseProgressing))
 		})
 
-		It("should lookup NetworkClass during reconcile", func() {
+		It("should read ImplementationStrategy during reconcile", func() {
 			Expect(k8sClient.Create(ctx, vnet)).To(Succeed())
 
 			mockProvider.triggerProvisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {
@@ -149,37 +131,38 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify job was triggered (confirms NetworkClass lookup succeeded)
+			// Verify job was triggered (confirms ImplementationStrategy was read successfully)
 			updatedVnet := &osacv1alpha1.VirtualNetwork{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace}, updatedVnet)).To(Succeed())
 			latestJob := osacv1alpha1.FindLatestJobByType(updatedVnet.Status.Jobs, osacv1alpha1.JobTypeProvision)
 			Expect(latestJob).NotTo(BeNil())
 		})
 
-		It("should requeue if NetworkClass not found", func() {
-			// Create VirtualNetwork with non-existent NetworkClass
-			vnetMissingClass := &osacv1alpha1.VirtualNetwork{
+		It("should requeue if ImplementationStrategy not set", func() {
+			// Create VirtualNetwork without ImplementationStrategy
+			vnetNoStrategy := &osacv1alpha1.VirtualNetwork{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vnet-missing-class",
+					Name:      "test-vnet-no-strategy",
 					Namespace: "default",
 				},
 				Spec: osacv1alpha1.VirtualNetworkSpec{
 					Region:       "us-west-1",
 					IPv4CIDR:     "10.0.0.0/16",
-					NetworkClass: "non-existent-class",
+					NetworkClass: "some-class",
+					// ImplementationStrategy intentionally not set
 				},
 			}
-			Expect(k8sClient.Create(ctx, vnetMissingClass)).To(Succeed())
+			Expect(k8sClient.Create(ctx, vnetNoStrategy)).To(Succeed())
 			defer func() {
-				vnetMissingClass.Finalizers = nil
-				_ = k8sClient.Update(ctx, vnetMissingClass)
-				_ = k8sClient.Delete(ctx, vnetMissingClass)
+				vnetNoStrategy.Finalizers = nil
+				_ = k8sClient.Update(ctx, vnetNoStrategy)
+				_ = k8sClient.Delete(ctx, vnetNoStrategy)
 			}()
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      vnetMissingClass.Name,
-					Namespace: vnetMissingClass.Namespace,
+					Name:      vnetNoStrategy.Name,
+					Namespace: vnetNoStrategy.Namespace,
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())

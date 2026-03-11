@@ -28,9 +28,9 @@ import (
 
 // SubnetFeedbackReconciler sends updates to the fulfillment service.
 type SubnetFeedbackReconciler struct {
-	hubClient       clnt.Client
-	subnetsClient   privatev1.SubnetsClient
-	subnetNamespace string
+	hubClient           clnt.Client
+	subnetsClient       privatev1.SubnetsClient
+	networkingNamespace string
 }
 
 // subnetFeedbackReconcilerTask contains data that is used for the reconciliation of a specific subnet, so there is less
@@ -42,11 +42,11 @@ type subnetFeedbackReconcilerTask struct {
 }
 
 // NewSubnetFeedbackReconciler creates a reconciler that sends to the fulfillment service updates about subnets.
-func NewSubnetFeedbackReconciler(hubClient clnt.Client, grpcConn *grpc.ClientConn, subnetNamespace string) *SubnetFeedbackReconciler {
+func NewSubnetFeedbackReconciler(hubClient clnt.Client, grpcConn *grpc.ClientConn, networkingNamespace string) *SubnetFeedbackReconciler {
 	return &SubnetFeedbackReconciler{
-		hubClient:       hubClient,
-		subnetsClient:   privatev1.NewSubnetsClient(grpcConn),
-		subnetNamespace: subnetNamespace,
+		hubClient:           hubClient,
+		subnetsClient:       privatev1.NewSubnetsClient(grpcConn),
+		networkingNamespace: networkingNamespace,
 	}
 }
 
@@ -54,7 +54,7 @@ func NewSubnetFeedbackReconciler(hubClient clnt.Client, grpcConn *grpc.ClientCon
 func (r *SubnetFeedbackReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("subnet-feedback").
-		For(&v1alpha1.Subnet{}, builder.WithPredicates(SubnetNamespacePredicate(r.subnetNamespace))).
+		For(&v1alpha1.Subnet{}, builder.WithPredicates(NetworkingNamespacePredicate(r.networkingNamespace))).
 		Complete(r)
 }
 

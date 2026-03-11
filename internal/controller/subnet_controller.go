@@ -30,7 +30,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/osac-project/osac-operator/api/v1alpha1"
 	"github.com/osac-project/osac-operator/internal/provisioning"
@@ -51,7 +50,7 @@ const (
 type SubnetReconciler struct {
 	client.Client
 	Scheme               *runtime.Scheme
-	SubnetNamespace      string
+	NetworkingNamespace  string
 	ProvisioningProvider provisioning.ProvisioningProvider
 	StatusPollInterval   time.Duration
 	MaxJobHistory        int
@@ -61,7 +60,6 @@ type SubnetReconciler struct {
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=subnets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=subnets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=virtualnetworks,verbs=get;list;watch
-// +kubebuilder:rbac:groups=osac.openshift.io,resources=networkclasses,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -102,20 +100,11 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return res, err
 }
 
-// SubnetNamespacePredicate creates a predicate that filters by namespace
-func SubnetNamespacePredicate(namespace string) predicate.Predicate {
-	return predicate.NewPredicateFuncs(
-		func(obj client.Object) bool {
-			return obj.GetNamespace() == namespace
-		},
-	)
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Subnet{}).
-		WithEventFilter(SubnetNamespacePredicate(r.SubnetNamespace)).
+		WithEventFilter(NetworkingNamespacePredicate(r.NetworkingNamespace)).
 		Complete(r)
 }
 
@@ -132,7 +121,7 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 	// Set phase to Progressing
 	subnet.Status.Phase = v1alpha1.SubnetPhaseProgressing
 
-	// Get parent VirtualNetwork
+	// Get parent VirtualNetwork to read implementation strategy
 	vnet := &v1alpha1.VirtualNetwork{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      subnet.Spec.VirtualNetwork,
@@ -146,15 +135,27 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 		return ctrl.Result{}, err
 	}
 
-	// Get NetworkClass from parent VirtualNetwork
-	networkClass := &v1alpha1.NetworkClass{}
-	err = r.Get(ctx, client.ObjectKey{Name: vnet.Spec.NetworkClass, Namespace: subnet.Namespace}, networkClass)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("NetworkClass not found, requeueing", "name", vnet.Spec.NetworkClass)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	// Read implementation strategy from parent VirtualNetwork spec
+	implementationStrategy := vnet.Spec.ImplementationStrategy
+	if implementationStrategy == "" {
+		log.Info("implementation strategy not set on parent VirtualNetwork, requeueing", "virtualNetwork", vnet.Name)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	// Add implementation-strategy annotation if not present or different
+	// This allows AAP playbooks to select the appropriate role without doing lookups
+	if subnet.Annotations == nil {
+		subnet.Annotations = make(map[string]string)
+	}
+	if subnet.Annotations[osacImplementationStrategyAnnotation] != implementationStrategy {
+		subnet.Annotations[osacImplementationStrategyAnnotation] = implementationStrategy
+		log.Info("setting implementation-strategy annotation", "strategy", implementationStrategy)
+		// Preserve the status we've set since Update returns server state (empty status)
+		currentStatus := subnet.Status.DeepCopy()
+		if err := r.Update(ctx, subnet); err != nil {
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
+		subnet.Status = *currentStatus
 	}
 
 	// Handle provisioning

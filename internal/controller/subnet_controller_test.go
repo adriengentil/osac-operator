@@ -38,7 +38,6 @@ var _ = Describe("SubnetReconciler", func() {
 		ctx          context.Context
 		subnet       *osacv1alpha1.Subnet
 		vnet         *osacv1alpha1.VirtualNetwork
-		networkClass *osacv1alpha1.NetworkClass
 	)
 
 	BeforeEach(func() {
@@ -47,37 +46,23 @@ var _ = Describe("SubnetReconciler", func() {
 		reconciler = &SubnetReconciler{
 			Client:               k8sClient,
 			Scheme:               k8sClient.Scheme(),
-			SubnetNamespace:      "default",
+			NetworkingNamespace:  "default",
 			ProvisioningProvider: mockProvider,
 			StatusPollInterval:   1 * time.Second,
 			MaxJobHistory:        10,
 		}
 
-		// Create NetworkClass fixture
-		networkClass = &osacv1alpha1.NetworkClass{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "cudn-net",
-				Namespace: "default",
-			},
-			Spec: osacv1alpha1.NetworkClassSpec{
-				ImplementationStrategy: "cudn-net",
-			},
-			Status: osacv1alpha1.NetworkClassStatus{
-				State: osacv1alpha1.NetworkClassStateReady,
-			},
-		}
-		Expect(k8sClient.Create(ctx, networkClass)).To(Succeed())
-
-		// Create VirtualNetwork fixture
+		// Create VirtualNetwork fixture with ImplementationStrategy set
 		vnet = &osacv1alpha1.VirtualNetwork{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-vnet",
 				Namespace: "default",
 			},
 			Spec: osacv1alpha1.VirtualNetworkSpec{
-				Region:       "us-west-1",
-				IPv4CIDR:     "10.0.0.0/16",
-				NetworkClass: "cudn-net",
+				Region:                 "us-west-1",
+				IPv4CIDR:               "10.0.0.0/16",
+				NetworkClass:           "cudn-net",
+				ImplementationStrategy: "cudn-net",
 			},
 		}
 		Expect(k8sClient.Create(ctx, vnet)).To(Succeed())
@@ -96,9 +81,6 @@ var _ = Describe("SubnetReconciler", func() {
 	})
 
 	AfterEach(func() {
-		// Cleanup NetworkClass
-		_ = k8sClient.Delete(ctx, networkClass)
-
 		// Cleanup VirtualNetwork
 		vnetKey := types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace}
 		existingVnet := &osacv1alpha1.VirtualNetwork{}
@@ -180,45 +162,46 @@ var _ = Describe("SubnetReconciler", func() {
 			_ = k8sClient.Delete(ctx, subnetNoParent)
 		})
 
-		It("should requeue when NetworkClass not found", func() {
-			// Create VirtualNetwork with missing NetworkClass
-			vnetMissingClass := &osacv1alpha1.VirtualNetwork{
+		It("should requeue when parent VirtualNetwork has no ImplementationStrategy", func() {
+			// Create VirtualNetwork without ImplementationStrategy
+			vnetNoStrategy := &osacv1alpha1.VirtualNetwork{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "vnet-missing-class",
+					Name:      "vnet-no-strategy",
 					Namespace: "default",
 				},
 				Spec: osacv1alpha1.VirtualNetworkSpec{
 					Region:       "us-west-1",
 					IPv4CIDR:     "10.0.0.0/16",
-					NetworkClass: "missing-class",
+					NetworkClass: "some-class",
+					// ImplementationStrategy intentionally not set
 				},
 			}
-			Expect(k8sClient.Create(ctx, vnetMissingClass)).To(Succeed())
+			Expect(k8sClient.Create(ctx, vnetNoStrategy)).To(Succeed())
 
-			subnetMissingClass := &osacv1alpha1.Subnet{
+			subnetNoStrategy := &osacv1alpha1.Subnet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "subnet-missing-class",
+					Name:      "subnet-no-strategy",
 					Namespace: "default",
 				},
 				Spec: osacv1alpha1.SubnetSpec{
-					VirtualNetwork: "vnet-missing-class",
+					VirtualNetwork: "vnet-no-strategy",
 					IPv4CIDR:       "10.0.3.0/24",
 				},
 			}
-			Expect(k8sClient.Create(ctx, subnetMissingClass)).To(Succeed())
+			Expect(k8sClient.Create(ctx, subnetNoStrategy)).To(Succeed())
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      subnetMissingClass.Name,
-					Namespace: subnetMissingClass.Namespace,
+					Name:      subnetNoStrategy.Name,
+					Namespace: subnetNoStrategy.Namespace,
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(10 * time.Second))
 
 			// Cleanup
-			_ = k8sClient.Delete(ctx, subnetMissingClass)
-			_ = k8sClient.Delete(ctx, vnetMissingClass)
+			_ = k8sClient.Delete(ctx, subnetNoStrategy)
+			_ = k8sClient.Delete(ctx, vnetNoStrategy)
 		})
 
 		It("should ignore subnet with unmanaged annotation", func() {

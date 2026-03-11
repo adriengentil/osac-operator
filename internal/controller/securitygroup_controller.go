@@ -30,7 +30,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/osac-project/osac-operator/api/v1alpha1"
 	"github.com/osac-project/osac-operator/internal/provisioning"
@@ -43,18 +42,17 @@ const (
 // SecurityGroupReconciler reconciles a SecurityGroup object
 type SecurityGroupReconciler struct {
 	client.Client
-	Scheme                 *runtime.Scheme
-	SecurityGroupNamespace string
-	ProvisioningProvider   provisioning.ProvisioningProvider
-	StatusPollInterval     time.Duration
-	MaxJobHistory          int
+	Scheme               *runtime.Scheme
+	NetworkingNamespace  string
+	ProvisioningProvider provisioning.ProvisioningProvider
+	StatusPollInterval   time.Duration
+	MaxJobHistory        int
 }
 
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=securitygroups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=securitygroups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=securitygroups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=virtualnetworks,verbs=get;list;watch
-// +kubebuilder:rbac:groups=osac.openshift.io,resources=networkclasses,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -109,7 +107,7 @@ func (r *SecurityGroupReconciler) handleUpdate(ctx context.Context, sg *v1alpha1
 		sg.Status.Phase = v1alpha1.SecurityGroupPhaseProgressing
 	}
 
-	// Lookup parent VirtualNetwork
+	// Lookup parent VirtualNetwork to get implementation strategy
 	vnet := &v1alpha1.VirtualNetwork{}
 	err := r.Get(ctx, client.ObjectKey{
 		Name:      sg.Spec.VirtualNetwork,
@@ -123,19 +121,15 @@ func (r *SecurityGroupReconciler) handleUpdate(ctx context.Context, sg *v1alpha1
 		return ctrl.Result{}, fmt.Errorf("failed to get parent VirtualNetwork: %w", err)
 	}
 
-	// Lookup NetworkClass from parent VirtualNetwork
-	networkClass := &v1alpha1.NetworkClass{}
-	err = r.Get(ctx, client.ObjectKey{Name: vnet.Spec.NetworkClass, Namespace: sg.Namespace}, networkClass)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("NetworkClass not found, requeueing", "name", vnet.Spec.NetworkClass)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-		}
-		return ctrl.Result{}, fmt.Errorf("failed to get NetworkClass: %w", err)
+	// Read implementation strategy from parent VirtualNetwork spec
+	implementationStrategy := vnet.Spec.ImplementationStrategy
+	if implementationStrategy == "" {
+		log.Info("implementation strategy not set on parent VirtualNetwork, requeueing", "virtualNetwork", vnet.Name)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
 	// Handle provisioning
-	return r.handleProvisioning(ctx, sg, networkClass)
+	return r.handleProvisioning(ctx, sg, implementationStrategy)
 }
 
 func (r *SecurityGroupReconciler) handleDelete(ctx context.Context, sg *v1alpha1.SecurityGroup) (ctrl.Result, error) {
@@ -166,7 +160,7 @@ func (r *SecurityGroupReconciler) handleDelete(ctx context.Context, sg *v1alpha1
 
 // handleProvisioning manages the provisioning job lifecycle for a SecurityGroup.
 // It triggers provisioning if needed and polls job status until completion.
-func (r *SecurityGroupReconciler) handleProvisioning(ctx context.Context, sg *v1alpha1.SecurityGroup, networkClass *v1alpha1.NetworkClass) (ctrl.Result, error) {
+func (r *SecurityGroupReconciler) handleProvisioning(ctx context.Context, sg *v1alpha1.SecurityGroup, implementationStrategy string) (ctrl.Result, error) {
 	log := ctrllog.FromContext(ctx)
 
 	// If no provider configured, skip provisioning
@@ -179,7 +173,7 @@ func (r *SecurityGroupReconciler) handleProvisioning(ctx context.Context, sg *v1
 	latestProvisionJob := v1alpha1.FindLatestJobByType(sg.Status.Jobs, v1alpha1.JobTypeProvision)
 
 	if r.needsProvisionJob(sg, latestProvisionJob) {
-		log.Info("triggering provisioning", "provider", r.ProvisioningProvider.Name(), "strategy", networkClass.Spec.ImplementationStrategy)
+		log.Info("triggering provisioning", "provider", r.ProvisioningProvider.Name(), "strategy", implementationStrategy)
 		result, err := r.ProvisioningProvider.TriggerProvision(ctx, sg)
 		if err != nil {
 			// Check if this is a rate limit error
@@ -403,15 +397,6 @@ func (r *SecurityGroupReconciler) updateJob(jobs []v1alpha1.JobStatus, updatedJo
 func (r *SecurityGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.SecurityGroup{}).
-		WithEventFilter(SecurityGroupNamespacePredicate(r.SecurityGroupNamespace)).
+		WithEventFilter(NetworkingNamespacePredicate(r.NetworkingNamespace)).
 		Complete(r)
-}
-
-// SecurityGroupNamespacePredicate filters events to only the configured namespace.
-func SecurityGroupNamespacePredicate(namespace string) predicate.Predicate {
-	return predicate.NewPredicateFuncs(
-		func(obj client.Object) bool {
-			return obj.GetNamespace() == namespace
-		},
-	)
 }

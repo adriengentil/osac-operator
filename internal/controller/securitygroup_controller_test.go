@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -44,7 +43,6 @@ var _ = Describe("SecurityGroupReconciler", func() {
 		ctx          context.Context
 		sg           *osacv1alpha1.SecurityGroup
 		vnet         *osacv1alpha1.VirtualNetwork
-		networkClass *osacv1alpha1.NetworkClass
 	)
 
 	BeforeEach(func() {
@@ -55,27 +53,16 @@ var _ = Describe("SecurityGroupReconciler", func() {
 		Expect(osacv1alpha1.AddToScheme(testScheme)).To(Succeed())
 		Expect(scheme.AddToScheme(testScheme)).To(Succeed())
 
-		// Create NetworkClass fixture
-		networkClass = &osacv1alpha1.NetworkClass{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "cudn-net",
-				Namespace: "test-namespace",
-			},
-			Spec: osacv1alpha1.NetworkClassSpec{
-				ImplementationStrategy: "cudn-net",
-			},
-			Status: osacv1alpha1.NetworkClassStatus{State: osacv1alpha1.NetworkClassStateReady},
-		}
-
-		// Create parent VirtualNetwork fixture
+		// Create parent VirtualNetwork fixture with ImplementationStrategy
 		vnet = &osacv1alpha1.VirtualNetwork{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-vnet",
 				Namespace: "test-namespace",
 			},
 			Spec: osacv1alpha1.VirtualNetworkSpec{
-				Region:       "us-west-1",
-				NetworkClass: "cudn-net",
+				Region:                 "us-west-1",
+				NetworkClass:           "cudn-net",
+				ImplementationStrategy: "cudn-net",
 			},
 		}
 
@@ -100,7 +87,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 		// Create fake client with fixtures
 		fakeClient = fake.NewClientBuilder().
 			WithScheme(testScheme).
-			WithObjects(networkClass, vnet, sg).
+			WithObjects(vnet, sg).
 			WithStatusSubresource(&osacv1alpha1.SecurityGroup{}).
 			Build()
 
@@ -111,12 +98,12 @@ var _ = Describe("SecurityGroupReconciler", func() {
 
 		// Create reconciler
 		reconciler = &SecurityGroupReconciler{
-			Client:                 fakeClient,
-			Scheme:                 testScheme,
-			SecurityGroupNamespace: "test-namespace",
-			ProvisioningProvider:   mockProvider,
-			StatusPollInterval:     1 * time.Second,
-			MaxJobHistory:          10,
+			Client:               fakeClient,
+			Scheme:               testScheme,
+			NetworkingNamespace:  "test-namespace",
+			ProvisioningProvider: mockProvider,
+			StatusPollInterval:   1 * time.Second,
+			MaxJobHistory:        10,
 		}
 	})
 
@@ -215,15 +202,15 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			Expect(result.RequeueAfter).To(Equal(10 * time.Second))
 		})
 
-		It("should lookup NetworkClass from parent", func() {
+		It("should read implementation strategy from parent VirtualNetwork", func() {
 			key := types.NamespacedName{Name: sg.Name, Namespace: sg.Namespace}
 
 			// Setup mock to capture the call
-			var capturedNetworkClass string
+			provisionTriggered := false
 			mockProvider.triggerProvisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {
-				// At this point, the controller has successfully looked up NetworkClass
-				// We can verify by checking that provisioning was triggered
-				capturedNetworkClass = "cudn-net"
+				// At this point, the controller has successfully read ImplementationStrategy
+				// from parent VirtualNetwork and triggered provisioning
+				provisionTriggered = true
 				return &provisioning.ProvisionResult{
 					JobID:        "job-123",
 					InitialState: osacv1alpha1.JobStatePending,
@@ -237,42 +224,43 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify NetworkClass was used
-			Expect(capturedNetworkClass).To(Equal("cudn-net"))
+			// Verify provisioning was triggered (indicating ImplementationStrategy was read)
+			Expect(provisionTriggered).To(BeTrue())
 		})
 
-		It("should requeue if NetworkClass not found", func() {
-			// Create VirtualNetwork with non-existent NetworkClass
-			badVnet := &osacv1alpha1.VirtualNetwork{
+		It("should requeue if parent VirtualNetwork has no ImplementationStrategy", func() {
+			// Create VirtualNetwork without ImplementationStrategy
+			vnetNoStrategy := &osacv1alpha1.VirtualNetwork{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "bad-vnet",
+					Name:      "vnet-no-strategy",
 					Namespace: "test-namespace",
 				},
 				Spec: osacv1alpha1.VirtualNetworkSpec{
 					Region:       "us-west-1",
-					NetworkClass: "non-existent-class",
+					NetworkClass: "some-class",
+					// ImplementationStrategy intentionally not set
 				},
 			}
-			Expect(fakeClient.Create(ctx, badVnet)).To(Succeed())
+			Expect(fakeClient.Create(ctx, vnetNoStrategy)).To(Succeed())
 
-			badSg := &osacv1alpha1.SecurityGroup{
+			sgNoStrategy := &osacv1alpha1.SecurityGroup{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "bad-sg",
+					Name:      "sg-no-strategy",
 					Namespace: "test-namespace",
 				},
 				Spec: osacv1alpha1.SecurityGroupSpec{
-					VirtualNetwork: "bad-vnet",
+					VirtualNetwork: "vnet-no-strategy",
 				},
 			}
-			Expect(fakeClient.Create(ctx, badSg)).To(Succeed())
+			Expect(fakeClient.Create(ctx, sgNoStrategy)).To(Succeed())
 
-			key := types.NamespacedName{Name: badSg.Name, Namespace: badSg.Namespace}
+			key := types.NamespacedName{Name: sgNoStrategy.Name, Namespace: sgNoStrategy.Namespace}
 
 			// First reconcile adds finalizer
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Second reconcile should requeue due to missing NetworkClass
+			// Second reconcile should requeue due to missing ImplementationStrategy
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(10 * time.Second))
