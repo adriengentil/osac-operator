@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	osacv1alpha1 "github.com/osac-project/osac-operator/api/v1alpha1"
+	"github.com/osac-project/osac-operator/internal/helpers"
 	"github.com/osac-project/osac-operator/internal/provisioning"
 )
 
@@ -514,7 +515,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 					Timestamp: metav1.Now(),
 					State:     osacv1alpha1.JobStatePending,
 				}
-				jobs = reconciler.appendJob(jobs, newJob)
+				jobs = helpers.AppendJob(jobs, newJob, reconciler.MaxJobHistory)
 			}
 
 			// Should only have MaxJobHistory jobs
@@ -547,7 +548,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 				Message: "Updated message",
 			}
 
-			reconciler.updateJob(jobs, updatedJob)
+			helpers.UpdateJob(jobs, updatedJob)
 
 			// Verify job was updated
 			Expect(jobs[0].State).To(Equal(osacv1alpha1.JobStateRunning))

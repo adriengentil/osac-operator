@@ -32,6 +32,7 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/osac-project/osac-operator/api/v1alpha1"
+	"github.com/osac-project/osac-operator/internal/helpers"
 	"github.com/osac-project/osac-operator/internal/provisioning"
 )
 
@@ -208,7 +209,7 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 	// Check if we need to trigger a (new) provision job
 	latestProvisionJob := v1alpha1.FindLatestJobByType(subnet.Status.Jobs, v1alpha1.JobTypeProvision)
 
-	if r.needsProvisionJob(subnet, latestProvisionJob) {
+	if helpers.NeedsProvisionJob(latestProvisionJob) {
 		log.Info("triggering provisioning", "provider", r.ProvisioningProvider.Name())
 		result, err := r.ProvisioningProvider.TriggerProvision(ctx, subnet)
 		if err != nil {
@@ -223,7 +224,7 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 			State:     result.InitialState,
 			Message:   result.Message,
 		}
-		subnet.Status.Jobs = r.appendJob(subnet.Status.Jobs, newJob)
+		subnet.Status.Jobs = helpers.AppendJob(subnet.Status.Jobs, newJob, r.getMaxJobHistory())
 		log.Info("provisioning job triggered", "jobID", result.JobID)
 		return ctrl.Result{RequeueAfter: r.getStatusPollInterval()}, nil
 	}
@@ -239,7 +240,7 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 	updatedJob := *latestProvisionJob
 	updatedJob.State = status.State
 	updatedJob.Message = status.Message
-	updateSubnetJob(subnet.Status.Jobs, updatedJob)
+	helpers.UpdateJob(subnet.Status.Jobs, updatedJob)
 
 	// If job is still running, requeue
 	if !status.State.IsTerminal() {
@@ -302,7 +303,7 @@ func (r *SubnetReconciler) handleDeprovisioning(ctx context.Context, subnet *v1a
 				Message:                "Deprovisioning job triggered",
 				BlockDeletionOnFailure: result.BlockDeletionOnFailure,
 			}
-			subnet.Status.Jobs = r.appendJob(subnet.Status.Jobs, newJob)
+			subnet.Status.Jobs = helpers.AppendJob(subnet.Status.Jobs, newJob, r.getMaxJobHistory())
 			log.Info("deprovisioning job triggered", "jobID", result.JobID)
 			return ctrl.Result{RequeueAfter: r.getStatusPollInterval()}, nil
 		}
@@ -314,7 +315,7 @@ func (r *SubnetReconciler) handleDeprovisioning(ctx context.Context, subnet *v1a
 		log.Error(err, "failed to get deprovision job status", "jobID", latestDeprovisionJob.JobID)
 		updatedJob := *latestDeprovisionJob
 		updatedJob.Message = fmt.Sprintf("Failed to get job status: %v", err)
-		updateSubnetJob(subnet.Status.Jobs, updatedJob)
+		helpers.UpdateJob(subnet.Status.Jobs, updatedJob)
 		return ctrl.Result{RequeueAfter: r.getStatusPollInterval()}, nil
 	}
 
@@ -325,7 +326,7 @@ func (r *SubnetReconciler) handleDeprovisioning(ctx context.Context, subnet *v1a
 	if status.ErrorDetails != "" {
 		updatedJob.Message = fmt.Sprintf("%s: %s", status.Message, status.ErrorDetails)
 	}
-	updateSubnetJob(subnet.Status.Jobs, updatedJob)
+	helpers.UpdateJob(subnet.Status.Jobs, updatedJob)
 
 	// If job is still running, requeue
 	if !status.State.IsTerminal() {
@@ -358,51 +359,12 @@ func (r *SubnetReconciler) handleDeprovisioning(ctx context.Context, subnet *v1a
 	}
 }
 
-// needsProvisionJob returns true when we should trigger a new provision job.
-func (r *SubnetReconciler) needsProvisionJob(subnet *v1alpha1.Subnet, latestJob *v1alpha1.JobStatus) bool {
-	if latestJob == nil || latestJob.JobID == "" {
-		return true
+// getMaxJobHistory returns the configured max job history or the default.
+func (r *SubnetReconciler) getMaxJobHistory() int {
+	if r.MaxJobHistory > 0 {
+		return r.MaxJobHistory
 	}
-	if !latestJob.State.IsTerminal() {
-		return false
-	}
-	// Trigger new job if previous job failed
-	return !latestJob.State.IsSuccessful()
-}
-
-// findSubnetJobByID finds a job by its ID in the jobs array.
-// Returns a pointer to the job if found, nil otherwise.
-func findSubnetJobByID(jobs []v1alpha1.JobStatus, jobID string) *v1alpha1.JobStatus {
-	for i := range jobs {
-		if jobs[i].JobID == jobID {
-			return &jobs[i]
-		}
-	}
-	return nil
-}
-
-// updateSubnetJob updates an existing job by ID with new values.
-// Returns true if the job was found and updated, false otherwise.
-func updateSubnetJob(jobs []v1alpha1.JobStatus, updatedJob v1alpha1.JobStatus) bool {
-	job := findSubnetJobByID(jobs, updatedJob.JobID)
-	if job == nil {
-		return false
-	}
-	*job = updatedJob
-	return true
-}
-
-// appendJob adds a new job to the jobs array and trims to maxHistory.
-func (r *SubnetReconciler) appendJob(jobs []v1alpha1.JobStatus, newJob v1alpha1.JobStatus) []v1alpha1.JobStatus {
-	jobs = append(jobs, newJob)
-	maxHistory := r.MaxJobHistory
-	if maxHistory == 0 {
-		maxHistory = defaultSubnetMaxJobHistory
-	}
-	if len(jobs) > maxHistory {
-		jobs = jobs[len(jobs)-maxHistory:]
-	}
-	return jobs
+	return defaultSubnetMaxJobHistory
 }
 
 // getStatusPollInterval returns the configured status poll interval or the default.

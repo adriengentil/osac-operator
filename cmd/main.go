@@ -191,7 +191,7 @@ func (f *controllerFlags) enableAllIfNoneSet() {
 // Must be called before creating the manager.
 func addSchemesForLocalControllers(
 	localScheme *runtime.Scheme,
-	enableCluster, enableHostPool, enableComputeInstance, enableTenant bool,
+	enableCluster, enableHostPool, enableComputeInstance, enableTenant, enableNetworking bool,
 ) {
 	utilruntime.Must(clientgoscheme.AddToScheme(localScheme))
 	utilruntime.Must(v1alpha1.AddToScheme(localScheme))
@@ -675,6 +675,7 @@ func main() {
 			ctrlFlags.HostPool,
 			ctrlFlags.ComputeInstance,
 			ctrlFlags.Tenant,
+			ctrlFlags.Networking,
 		)
 	} else {
 		remoteScheme = runtime.NewScheme()

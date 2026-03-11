@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	osacv1alpha1 "github.com/osac-project/osac-operator/api/v1alpha1"
+	"github.com/osac-project/osac-operator/internal/helpers"
 	"github.com/osac-project/osac-operator/internal/provisioning"
 )
 
@@ -282,7 +283,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 					State:     osacv1alpha1.JobStatePending,
 					Message:   "Job triggered",
 				}
-				vnet.Status.Jobs = reconciler.appendJob(vnet.Status.Jobs, newJob)
+				vnet.Status.Jobs = helpers.AppendJob(vnet.Status.Jobs, newJob, reconciler.MaxJobHistory)
 			}
 
 			// Should only keep last 3 jobs
